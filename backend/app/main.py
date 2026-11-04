@@ -127,6 +127,7 @@ def submit_challenge_attempt(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    gameplay_service.seed_default_challenges(db)
     challenge = db.get(models.Challenge, challenge_id)
     if challenge is None:
         raise HTTPException(status_code=404, detail="Cooking challenge not found")
@@ -140,21 +141,22 @@ def get_progress(
     current_user: models.User = Depends(get_current_user),
 ):
     prog = gameplay_service.get_user_progress(db, current_user.id)
-    _, title, base_xp, next_xp = ProgressionManager.get_level_info(prog.total_xp)
+    level, title, base_xp, next_xp = ProgressionManager.get_level_info(prog.total_xp)
 
-    attempts = db.scalars(
-        select(models.Attempt).where(models.Attempt.user_id == current_user.id)
+    rows = db.scalars(
+        select(models.ChallengeProgress)
+        .where(models.ChallengeProgress.user_id == current_user.id)
+        .order_by(models.ChallengeProgress.challenge_id)
     ).all()
-    passed_attempts = [a for a in attempts if a.passed]
-    total_stars = sum(a.stars for a in passed_attempts)
 
     return schemas.UserProgressOut(
         user_id=current_user.id,
         total_xp=prog.total_xp,
-        current_level=prog.current_level,
+        current_level=level,
         rank_title=title,
         current_level_base_xp=base_xp,
         next_level_xp=next_xp,
-        completed_challenges_count=len(set(a.challenge_id for a in passed_attempts)),
-        total_stars=total_stars,
+        completed_challenges_count=sum(1 for r in rows if r.completed),
+        total_stars=sum(r.best_stars for r in rows if r.completed),
+        challenges=[schemas.ChallengeProgressOut.model_validate(r) for r in rows],
     )

@@ -5,10 +5,7 @@ from typing import Any
 from gameplay.engine import CookingEvaluator, ProgressionManager
 from gameplay.models import (
     ActionType,
-    CookingStep,
-    IngredientItem,
     PlayerActionRecord,
-    RecipeChallenge,
     Station,
 )
 from gameplay.recipes import get_challenge_by_id, get_default_challenges

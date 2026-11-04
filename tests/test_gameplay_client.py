@@ -3,8 +3,6 @@
 import unittest
 from frontend.api_client import ApiClient, Profile, Session
 from frontend.local_service import LocalGameService
-from gameplay.models import ActionType, HeatLevel, Station
-from gameplay.recipes import get_challenge_by_id
 
 
 class GameplayClientTests(unittest.TestCase):

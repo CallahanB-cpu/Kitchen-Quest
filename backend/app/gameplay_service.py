@@ -2,12 +2,11 @@
 
 from datetime import datetime, timezone
 import json
-from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from gameplay.engine import CookingEvaluator, ProgressionManager
+from gameplay.engine import CookingEvaluator
 from gameplay.models import (
     ActionType,
     CookingStep,
@@ -70,10 +69,11 @@ def challenge_to_schema(
     ingredients = json.loads(challenge.ingredients_json) if challenge.ingredients_json else []
     steps = json.loads(challenge.steps_json) if challenge.steps_json else []
 
-    best_attempt = db.scalar(
-        select(models.Attempt)
-        .where(models.Attempt.user_id == user_id, models.Attempt.challenge_id == challenge.id)
-        .order_by(desc(models.Attempt.stars), desc(models.Attempt.accuracy_score))
+    best = db.scalar(
+        select(models.ChallengeProgress).where(
+            models.ChallengeProgress.user_id == user_id,
+            models.ChallengeProgress.challenge_id == challenge.id,
+        )
     )
 
     return schemas.ChallengeOut(
@@ -87,9 +87,44 @@ def challenge_to_schema(
         chef_tip=challenge.chef_tip,
         ingredients=ingredients,
         steps=steps,
-        best_stars=best_attempt.stars if best_attempt else 0,
-        best_score=float(best_attempt.accuracy_score) if best_attempt else 0.0,
+        best_stars=best.best_stars if best else 0,
+        best_score=float(best.best_score) if best else 0.0,
     )
+
+
+def update_challenge_progress(
+    db: Session, user_id: int, challenge_id: int, attempt: models.Attempt
+) -> models.ChallengeProgress:
+    """Upsert the user's per-challenge record from a freshly scored attempt."""
+    row = db.scalar(
+        select(models.ChallengeProgress).where(
+            models.ChallengeProgress.user_id == user_id,
+            models.ChallengeProgress.challenge_id == challenge_id,
+        )
+    )
+    if row is None:
+        row = models.ChallengeProgress(
+            user_id=user_id,
+            challenge_id=challenge_id,
+            best_stars=0,
+            best_score=0.0,
+            attempts_count=0,
+            completed=False,
+        )
+        db.add(row)
+
+    row.attempts_count += 1
+    row.last_attempt_at = attempt.created_at
+    if (attempt.stars, attempt.accuracy_score) > (row.best_stars, row.best_score):
+        row.best_stars = attempt.stars
+        row.best_score = attempt.accuracy_score
+    if attempt.passed:
+        row.completed = True
+        if row.first_completed_at is None:
+            row.first_completed_at = attempt.created_at
+        if row.best_time_seconds is None or attempt.time_taken_seconds < row.best_time_seconds:
+            row.best_time_seconds = attempt.time_taken_seconds
+    return row
 
 
 def process_attempt(
@@ -155,14 +190,15 @@ def process_attempt(
         passed=eval_result.passed,
         feedback_json=json.dumps(eval_result.feedback),
         actions_log_json=json.dumps(actions_data),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(attempt)
 
-    # 6. Update User Progress
+    # 6. Update user progress and per-challenge best results (single transaction)
     progress.total_xp = eval_result.new_total_xp
     progress.current_level = eval_result.new_level
     progress.rank_title = eval_result.rank_title
+    update_challenge_progress(db, user.id, challenge.id, attempt)
     db.commit()
 
     return schemas.AttemptOut(

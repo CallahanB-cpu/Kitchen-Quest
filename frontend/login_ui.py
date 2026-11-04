@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -543,23 +542,30 @@ class UserWindow(QMainWindow):
 
     def _start_cooking(self, challenge):
         station_widget = CookingStationWidget(challenge)
-        station_widget.cooking_finished.connect(lambda res: self._on_cooking_done(challenge.id, res))
+        # The action list lives on the simulator, not on the AttemptResult the widget emits.
+        station_widget.cooking_finished.connect(
+            lambda res, w=station_widget: self._on_cooking_done(
+                challenge.id, res, list(w.sim.action_history)
+            )
+        )
         station_widget.back_to_hub_requested.connect(self._return_to_hub)
         self.stack.addWidget(station_widget)
         self.stack.setCurrentWidget(station_widget)
 
-    def _on_cooking_done(self, challenge_id: int, result):
+    def _on_cooking_done(self, challenge_id: int, result, action_history):
+        """Save the finished recipe to the backend right away (XP, level, best stars)."""
         if self.session and self.client:
             try:
-                actions = [a.to_dict() for a in getattr(result, "action_history", [])]
                 self.client.submit_attempt(
                     challenge_id=challenge_id,
-                    actions_data=actions,
+                    actions_data=[a.to_dict() for a in action_history],
                     time_taken_seconds=result.time_taken_seconds,
                     token=self.session.access_token,
                 )
+            except ApiError as exc:
+                QMessageBox.warning(self, "Progress not saved", f"{exc}\n\nThis result was not saved to your account.")
             except Exception:
-                pass
+                QMessageBox.warning(self, "Progress not saved", "Something went wrong while saving your result. It was not saved to your account.")
         self._return_to_hub()
 
     def _return_to_hub(self):

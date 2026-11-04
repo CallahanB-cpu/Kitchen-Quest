@@ -8,7 +8,7 @@ from gameplay.models import (
     Station,
 )
 from gameplay.recipes import get_challenge_by_id, get_default_challenges
-from gameplay.engine import KitchenSimulator, CookingEvaluator, ProgressionManager
+from gameplay.engine import KitchenSimulator, ProgressionManager
 
 
 class GameplayEngineTests(unittest.TestCase):

@@ -1,6 +1,5 @@
 """Interactive 2D virtual kitchen with multi-station cooking and challenge hub."""
 
-import sys
 import time
 from typing import Any
 
@@ -32,7 +31,12 @@ except ImportError:
     QDialog = object
     QFrame = object
 
-from gameplay.engine import KitchenSimulator, ProgressionManager
+try:
+    from .api_client import ApiError
+except ImportError:
+    from api_client import ApiError
+
+from gameplay.engine import KitchenSimulator
 from gameplay.models import (
     ActionType,
     AttemptResult,
@@ -58,6 +62,15 @@ RED = "#c8362b"
 GREEN = "#2e7d32"
 GOLD = "#d48806"
 BLUE = "#1976d2"
+
+STATION_ORDER = (Station.PANTRY, Station.PREP, Station.MIXING, Station.STOVE, Station.PLATING)
+STATION_LABELS = {
+    Station.PANTRY: "Pantry",
+    Station.PREP: "Cutting Board",
+    Station.MIXING: "Mixing Bowl",
+    Station.STOVE: "Pan",
+    Station.PLATING: "Plate",
+}
 
 
 class ResultsDialog(QDialog):
@@ -171,6 +184,9 @@ class CookingStationWidget(QWidget):
         self.sim = KitchenSimulator(challenge)
         self.prep_clicks: int = 0
         self.mix_clicks: int = 0
+        self._prep_key: tuple | None = None  # (action, target item id) the click count belongs to
+        self._mix_key: ActionType | None = None
+        self._ingredient_rows: list[tuple[str, str]] = []  # what the counter list currently shows
 
         self._setup_ui()
 
@@ -239,28 +255,34 @@ class CookingStationWidget(QWidget):
         # BOTTOM WORK AREA: PANTRY & ACTION LOG
         bottom_box = QHBoxLayout()
 
-        # Pantry Group
-        pantry_group = QGroupBox("🧺 Pantry & Ingredients Counter")
+        # Ingredients Counter: every ingredient is listed with its current location,
+        # so anything can be selected and moved to any station (or back to the pantry).
+        pantry_group = QGroupBox("🧺 Ingredients Counter (select one, then move it)")
         pantry_group.setStyleSheet(f"QGroupBox {{ font-weight: bold; color: {BROWN}; }}")
         pantry_layout = QVBoxLayout(pantry_group)
-        self.pantry_list = QListWidget()
-        self.pantry_list.setStyleSheet(f"background: {INPUT_BG}; border: 1px solid {BEIGE_DARK}; border-radius: 6px;")
-        pantry_layout.addWidget(self.pantry_list)
+        self.ingredient_list = QListWidget()
+        # Selection colors are set here too so the highlight stays visible even when
+        # the list loses focus (e.g. while the mouse travels to a button).
+        self.ingredient_list.setStyleSheet(f"""
+            QListWidget {{ background: {INPUT_BG}; border: 1px solid {BEIGE_DARK}; border-radius: 6px; }}
+            QListWidget::item:selected, QListWidget::item:selected:!active {{ background: {RED}; color: white; }}
+        """)
+        pantry_layout.addWidget(self.ingredient_list)
 
-        move_btn_row = QHBoxLayout()
-        to_prep_btn = QPushButton("Move to Prep")
-        to_prep_btn.clicked.connect(lambda: self._move_selected_ingredient(Station.PREP))
-        to_mix_btn = QPushButton("Move to Bowl")
-        to_mix_btn.clicked.connect(lambda: self._move_selected_ingredient(Station.MIXING))
-        to_stove_btn = QPushButton("Add to Pan")
-        to_stove_btn.clicked.connect(lambda: self._move_selected_ingredient(Station.STOVE))
-        to_plate_btn = QPushButton("Transfer to Plate")
-        to_plate_btn.clicked.connect(lambda: self._move_selected_ingredient(Station.PLATING))
-
-        for b in (to_prep_btn, to_mix_btn, to_stove_btn, to_plate_btn):
+        move_btn_grid = QGridLayout()
+        move_buttons = (
+            ("Move to Prep", Station.PREP),
+            ("Move to Bowl", Station.MIXING),
+            ("Add to Pan", Station.STOVE),
+            ("Transfer to Plate", Station.PLATING),
+            ("↩ Return to Pantry", Station.PANTRY),
+        )
+        for idx, (label, station) in enumerate(move_buttons):
+            b = QPushButton(label)
             b.setStyleSheet(f"background: {BEIGE_DARK}; color: {BROWN}; font-size: 12px; padding: 4px; border-radius: 4px;")
-            move_btn_row.addWidget(b)
-        pantry_layout.addLayout(move_btn_row)
+            b.clicked.connect(lambda _, st=station: self._move_selected_ingredient(st))
+            move_btn_grid.addWidget(b, idx // 3, idx % 3)
+        pantry_layout.addLayout(move_btn_grid)
         bottom_box.addWidget(pantry_group, stretch=1)
 
         # Live Kitchen Feed
@@ -541,28 +563,55 @@ class CookingStationWidget(QWidget):
 
         self._refresh_all_views()
 
+    def _selected_item_id(self) -> str | None:
+        sel = self.ingredient_list.currentItem()
+        return sel.data(Qt.ItemDataRole.UserRole) if sel else None
+
+    def _find_item(self, item_id: str) -> IngredientItem | None:
+        for station in STATION_ORDER:
+            for item in self.sim.get_items_at_station(station):
+                if item.id == item_id:
+                    return item
+        return None
+
     def _move_selected_ingredient(self, target_station: Station):
-        sel = self.pantry_list.currentItem()
-        if not sel:
+        item_id = self._selected_item_id()
+        if not item_id:
+            self._log_action("Select an ingredient in the list first.")
             return
-        item_id = sel.data(Qt.ItemDataRole.UserRole)
-        if item_id:
-            moved = self.sim.move_ingredient(item_id, target_station)
-            if moved:
-                self._log_action(f"Moved {sel.text()} to {target_station.value.title()} Station.")
-                self._refresh_all_views()
+        item = self._find_item(item_id)
+        if item is None:
+            return
+        if self.sim.move_ingredient(item_id, target_station):
+            self._log_action(f"Moved {item.name} to {STATION_LABELS[target_station]}.")
+            self._refresh_all_views()
+        else:
+            self._log_action(f"{item.name} is already at {STATION_LABELS[target_station]}.")
 
     def _on_prep_action(self, action: ActionType):
         if not self.sim.prep_board:
             self._log_action("Cutting board is empty! Move an ingredient from the Pantry first.")
             return
 
+        # Prep only the selected ingredient if it is on the board; with nothing
+        # selected on the board, fall back to prepping everything on it.
+        selected_id = self._selected_item_id()
+        board_ids = {i.id for i in self.sim.prep_board}
+        target_id = selected_id if selected_id in board_ids else None
+        targets = [i for i in self.sim.prep_board if target_id is None or i.id == target_id]
+
+        # The click count belongs to one action on one target; start over if either changes.
+        key = (action, target_id)
+        if key != self._prep_key:
+            self._prep_key = key
+            self.prep_clicks = 0
+
         self.prep_clicks += 1
         self.prep_progress.setValue(min(3, self.prep_clicks))
 
         if self.prep_clicks >= 3:
-            self.sim.perform_prep(action)
-            names = ", ".join(i.name for i in self.sim.prep_board)
+            self.sim.perform_prep(action, target_id)
+            names = ", ".join(i.name for i in targets)
             self._log_action(f"{action.value.title()}ed {names} on the cutting board!")
             self.prep_clicks = 0
             self.prep_progress.setValue(0)
@@ -574,6 +623,10 @@ class CookingStationWidget(QWidget):
         if not self.sim.mixing_bowl:
             self._log_action("Mixing bowl is empty! Add ingredients first.")
             return
+
+        if action != self._mix_key:
+            self._mix_key = action
+            self.mix_clicks = 0
 
         self.mix_clicks += 1
         self.mix_progress.setValue(min(4, self.mix_clicks))
@@ -634,6 +687,28 @@ class CookingStationWidget(QWidget):
         item = QListWidgetItem(f"[{t}] {text}")
         self.feed_list.insertItem(0, item)
 
+    def _refresh_ingredient_list(self):
+        # Rebuild the counter list only when its contents changed, keeping the selection.
+
+        rows = []
+        for station in STATION_ORDER:
+            for i in self.sim.get_items_at_station(station):
+                rows.append((i.id, f"{i.icon} {i.name} ({i.quantity:g} {i.unit}) — [{i.state.value}] · {STATION_LABELS[station]}"))
+        if rows == self._ingredient_rows:
+            return
+        self._ingredient_rows = rows
+
+        selected_id = self._selected_item_id()
+        scroll = self.ingredient_list.verticalScrollBar().value()
+        self.ingredient_list.clear()
+        for item_id, text in rows:
+            entry = QListWidgetItem(text)
+            entry.setData(Qt.ItemDataRole.UserRole, item_id)
+            self.ingredient_list.addItem(entry)
+            if item_id == selected_id:
+                self.ingredient_list.setCurrentItem(entry)
+        self.ingredient_list.verticalScrollBar().setValue(scroll)
+
     def _refresh_all_views(self):
         # Step instruction
         step_idx = self.sim.current_step_index
@@ -646,18 +721,17 @@ class CookingStationWidget(QWidget):
         else:
             self.instruction_banner.setText("<b>All steps ready!</b> Season your dish and click 'Finish & Serve Dish' on the Plating Station.")
 
-        # Pantry
-        self.pantry_list.clear()
-        for i in self.sim.pantry_items:
-            item = QListWidgetItem(f"{i.icon} {i.name} ({i.quantity} {i.unit}) — [{i.state.value}]")
-            item.setData(Qt.ItemDataRole.UserRole, i.id)
-            self.pantry_list.addItem(item)
+        self._refresh_ingredient_list()
 
         # Prep board
         if self.sim.prep_board:
-            self.prep_items_lbl.setText("\n".join(f"{i.icon} {i.name} — [{i.state.value.upper()}]" for i in self.sim.prep_board))
+            self.prep_items_lbl.setText(
+                "\n".join(f"{i.icon} {i.name} — [{i.state.value.upper()}]" for i in self.sim.prep_board)
+                + "\n\nSelect an ingredient in the counter list to prep just that one. "
+                  "Use 'Return to Pantry' to take it off the board."
+            )
         else:
-            self.prep_items_lbl.setText("Cutting Board is empty. Select an ingredient from Pantry and click 'Move to Prep'.")
+            self.prep_items_lbl.setText("Cutting Board is empty. Select an ingredient from the counter list and click 'Move to Prep'.")
 
         # Mixing bowl
         if self.sim.mixing_bowl:
@@ -752,6 +826,13 @@ class KitchenHubWidget(QWidget):
 
         main_layout.addWidget(header_card)
 
+        # Shown only when saved progress cannot be loaded from the server
+        self.status_lbl = QLabel("")
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet("color: #b3261e; font-size: 13px; font-weight: bold;")
+        self.status_lbl.hide()
+        main_layout.addWidget(self.status_lbl)
+
         # RECIPES / CHALLENGES TITLE
         ch_title = QLabel("🍳 Cooking Challenges & Lessons")
         ch_title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {BROWN};")
@@ -771,8 +852,15 @@ class KitchenHubWidget(QWidget):
     def refresh_progress(self):
         """Fetch updated progress and challenges from API client or local service."""
         if self.api_client:
-            progress = self.api_client.get_progress(self.token)
-            challenges = self.api_client.get_challenges(self.token)
+            try:
+                progress = self.api_client.get_progress(self.token)
+                challenges = self.api_client.get_challenges(self.token)
+            except ApiError as exc:
+                # Keep whatever is on screen; never replace saved progress with blank local data.
+                self.status_lbl.setText(f"⚠ Could not load your saved progress: {exc}")
+                self.status_lbl.show()
+                return
+            self.status_lbl.hide()
         else:
             challenges = [c.to_dict() for c in get_default_challenges()]
             progress = {"current_level": 1, "rank_title": "Prep Cook", "total_xp": 0, "current_level_base_xp": 0, "next_level_xp": 100, "total_stars": 0}
@@ -864,4 +952,3 @@ class KitchenHubWidget(QWidget):
         c = get_challenge_by_id(challenge_id)
         if c:
             self.challenge_selected.emit(c)
-

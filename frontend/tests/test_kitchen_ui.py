@@ -16,8 +16,7 @@ try:
 except ImportError:
     QApplication = None
 
-from gameplay.engine import KitchenSimulator
-from gameplay.models import ActionType, AttemptResult, HeatLevel, Station
+from gameplay.models import AttemptResult, HeatLevel, Station
 from gameplay.recipes import get_challenge_by_id
 
 

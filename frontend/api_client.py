@@ -108,26 +108,27 @@ class ApiClient:
             content_type="application/json",
         ))
 
+    # Signed-in requests (a token is passed) always go to the server and raise ApiError
+    # on failure. They never fall back to the in-memory LocalGameService, because that
+    # would hide a failed save and show progress that is lost on the next sign-in.
+    # Only calls made without a token (offline/guest play) use the local service.
+
     def get_challenges(self, token: str | None = None) -> list[dict[str, Any]]:
-        """Fetch cooking challenges from backend or local fallback."""
+        """Fetch cooking challenges (with this user's best stars) from the backend."""
         if token:
-            try:
-                res = self._request("GET", "/api/challenges", token=token)
-                if isinstance(res, list):
-                    return res
-            except ApiError:
-                pass
+            res = self._request("GET", "/api/challenges", token=token)
+            if not isinstance(res, list):
+                raise ApiError("The server returned an unexpected response. Please try again.")
+            return res
         return self.local_service.get_challenges()
 
     def get_challenge(self, challenge_id: int, token: str | None = None) -> dict[str, Any] | None:
         """Fetch challenge details."""
         if token:
-            try:
-                res = self._request("GET", f"/api/challenges/{challenge_id}", token=token)
-                if isinstance(res, dict):
-                    return res
-            except ApiError:
-                pass
+            res = self._request("GET", f"/api/challenges/{challenge_id}", token=token)
+            if not isinstance(res, dict):
+                raise ApiError("The server returned an unexpected response. Please try again.")
+            return res
         return self.local_service.get_challenge(challenge_id)
 
     def submit_attempt(
@@ -137,33 +138,29 @@ class ApiClient:
         time_taken_seconds: float,
         token: str | None = None,
     ) -> dict[str, Any]:
-        """Submit completed cooking attempt for validation and scoring."""
+        """Submit a completed attempt. The server scores it and saves XP, level and best stars."""
         if token:
-            try:
-                payload = {
-                    "actions": actions_data,
-                    "time_taken_seconds": round(time_taken_seconds, 2),
-                }
-                res = self._request(
-                    "POST",
-                    f"/api/challenges/{challenge_id}/attempts",
-                    body=json.dumps(payload).encode("utf-8"),
-                    content_type="application/json",
-                    token=token,
-                )
-                if isinstance(res, dict):
-                    return res
-            except ApiError:
-                pass
+            payload = {
+                "actions": actions_data,
+                "time_taken_seconds": round(time_taken_seconds, 2),
+            }
+            res = self._request(
+                "POST",
+                f"/api/challenges/{challenge_id}/attempts",
+                body=json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+                token=token,
+            )
+            if not isinstance(res, dict):
+                raise ApiError("The server returned an unexpected response. Please try again.")
+            return res
         return self.local_service.submit_attempt(challenge_id, actions_data, time_taken_seconds)
 
     def get_progress(self, token: str | None = None) -> dict[str, Any]:
-        """Fetch user level, XP, and completed challenges."""
+        """Fetch the user's saved level, XP and completed challenges."""
         if token:
-            try:
-                res = self._request("GET", "/api/progress", token=token)
-                if isinstance(res, dict):
-                    return res
-            except ApiError:
-                pass
+            res = self._request("GET", "/api/progress", token=token)
+            if not isinstance(res, dict):
+                raise ApiError("The server returned an unexpected response. Please try again.")
+            return res
         return self.local_service.get_progress()

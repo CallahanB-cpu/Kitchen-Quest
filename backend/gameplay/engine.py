@@ -98,15 +98,25 @@ class KitchenSimulator:
         for station_list in (self.pantry_items, self.prep_board, self.mixing_bowl, self.stove_pan, self.plate):
             for i, item in enumerate(station_list):
                 if item.id == item_id:
+                    if station_list is self.get_items_at_station(target_station):
+                        return False  # Already at the target station
                     station_list.pop(i)
                     item.current_station = target_station
                     self.get_items_at_station(target_station).append(item)
-                    self._record_action(
-                        target_station,
-                        ActionType.COMBINE if target_station in (Station.MIXING, Station.STOVE) else ActionType.ADD_TO_PLATE,
-                        [item.name],
-                        {"target_station": target_station.value},
-                    )
+                    if station_list is self.stove_pan and not self.stove_pan:
+                        self.stove_cook_seconds = 0.0  # Emptied pan starts a fresh batch
+                    # Only record moves that are real gameplay actions; moving to the
+                    # cutting board or back to the pantry is just rearranging.
+                    if target_station in (Station.MIXING, Station.STOVE):
+                        self._record_action(
+                            target_station, ActionType.COMBINE, [item.name],
+                            {"target_station": target_station.value},
+                        )
+                    elif target_station == Station.PLATING:
+                        self._record_action(
+                            target_station, ActionType.ADD_TO_PLATE, [item.name],
+                            {"target_station": target_station.value},
+                        )
                     return True
         return False
 
@@ -397,4 +407,3 @@ class CookingEvaluator:
             rank_title=new_title,
             leveled_up=leveled_up,
         )
-

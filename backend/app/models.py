@@ -1,5 +1,7 @@
 import enum
-from sqlalchemy import Boolean, Enum, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -73,6 +75,10 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    challenge_progress: Mapped[list["ChallengeProgress"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Challenge(Base):
@@ -96,6 +102,10 @@ class Challenge(Base):
         back_populates="challenge",
         cascade="all, delete-orphan",
     )
+    user_progress: Mapped[list["ChallengeProgress"]] = relationship(
+        back_populates="challenge",
+        cascade="all, delete-orphan",
+    )
 
 
 class Attempt(Base):
@@ -113,7 +123,9 @@ class Attempt(Base):
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
     feedback_json: Mapped[str | None] = mapped_column(Text)
     actions_log_json: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
 
     user: Mapped["User"] = relationship(back_populates="attempts")
     challenge: Mapped["Challenge"] = relationship(back_populates="attempts")
@@ -130,3 +142,26 @@ class UserProgress(Base):
     rank_title: Mapped[str] = mapped_column(String(50), default="Prep Cook")
 
     user: Mapped["User"] = relationship(back_populates="progress")
+
+
+class ChallengeProgress(Base):
+    """One row per (user, challenge): the player's best result and play counts."""
+
+    __tablename__ = "challenge_progress"
+    __table_args__ = (UniqueConstraint("user_id", "challenge_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    challenge_id: Mapped[int] = mapped_column(
+        ForeignKey("challenges.id", ondelete="CASCADE"), index=True
+    )
+    best_stars: Mapped[int] = mapped_column(Integer, default=0)
+    best_score: Mapped[float] = mapped_column(Float, default=0.0)
+    best_time_seconds: Mapped[float | None] = mapped_column(Float)
+    attempts_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped["User"] = relationship(back_populates="challenge_progress")
+    challenge: Mapped["Challenge"] = relationship(back_populates="user_progress")

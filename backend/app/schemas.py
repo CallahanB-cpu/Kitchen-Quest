@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from .models import Role
@@ -111,6 +112,19 @@ class AttemptOut(BaseModel):
     leveled_up: bool
 
 
+class ChallengeProgressOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    challenge_id: int
+    best_stars: int
+    best_score: float
+    best_time_seconds: float | None = None
+    attempts_count: int
+    completed: bool
+    first_completed_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+
+
 class UserProgressOut(BaseModel):
     user_id: int
     total_xp: int
@@ -120,3 +134,4 @@ class UserProgressOut(BaseModel):
     next_level_xp: int
     completed_challenges_count: int
     total_stars: int
+    challenges: list[ChallengeProgressOut] = Field(default_factory=list)
